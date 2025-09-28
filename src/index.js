@@ -11,27 +11,27 @@ const app = express();
 app.use(express.json());
 
 // --- Configuración de Conexión a MySQL ---
-// Usamos las variables de entorno que Railway provee/vincula.
-const dbConfig = {
-    host: process.env.MYSQL_HOST,
-    user: process.env.MYSQL_USER,
-    password: process.env.MYSQL_PASSWORD,
-    database: process.env.MYSQL_DATABASE,
-    port: process.env.MYSQL_PORT
-};
+// ¡CRUCIAL! Usamos la variable DATABASE_URL inyectada por Railway.
+const connectionUrl = process.env.DATABASE_URL;
 
 /**
- * Función que crea una conexión a la DB, la ejecuta y la cierra automáticamente.
- * Esto ayuda a mantener el pool de conexiones eficiente.
+ * Función que crea una conexión a la DB.
+ * Usa DATABASE_URL para la conexión.
  * @returns {Promise<mysql.Connection>} La conexión a la base de datos.
  */
 async function getConnection() {
+    // Si la conexión URL no existe, lanzamos un error claro
+    if (!connectionUrl) {
+        console.error('❌ Error: La variable DATABASE_URL no está configurada.');
+        throw new Error('No se pudo conectar: Configuración de DB faltante.');
+    }
+    
     try {
-        // En un entorno de producción con alto tráfico, se recomienda usar un 'Pool' de conexiones.
-        return await mysql.createConnection(dbConfig);
+        // mysql2 puede conectarse usando la cadena de conexión completa (DATABASE_URL)
+        return await mysql.createConnection(connectionUrl);
     } catch (error) {
         console.error('❌ Error al obtener conexión a la base de datos:', error.message);
-        throw new Error('No se pudo conectar a la base de datos.');
+        throw new Error('No se pudo conectar a la base de datos. Revise las credenciales.');
     }
 }
 
@@ -47,8 +47,7 @@ app.get('/', (req, res) => {
 /**
  * [1] CREAR ESTACIÓN
  * POST /api/stations
- * Registra una nueva estación con ID, nombre, ubicación, tipo y estado ACTIVA por defecto.
- * Asume que el ID es autoincremental en la tabla.
+ * Registra una nueva estación.
  */
 app.post('/api/stations', async (req, res) => {
     const { name, location, type } = req.body;
@@ -58,10 +57,8 @@ app.post('/api/stations', async (req, res) => {
         return res.status(400).json({ error: 'Faltan campos requeridos: name, location, type.' });
     }
 
-    // El estado (is_active) se establece a TRUE por defecto en la DB y en el INSERT.
-    const is_active = true;
-
     // TODO: Añadir validación del 'type' (origen, destino, intermedia)
+    const is_active = true;
     
     let connection;
     try {
@@ -87,14 +84,13 @@ app.post('/api/stations', async (req, res) => {
 /**
  * [2] VISUALIZAR TODAS LAS ESTACIONES
  * GET /api/stations
- * Muestra información esencial de todas las estaciones ACTIVAS. (Solo para Administrador)
+ * Muestra información esencial de todas las estaciones ACTIVAS.
  */
 app.get('/api/stations', async (req, res) => {
     // Nota: Aquí se debería incluir un middleware de autenticación/autorización (Admin).
     let connection;
     try {
         connection = await getConnection();
-        // Solo mostramos estaciones que NO han sido eliminadas lógicamente (is_active = TRUE)
         const query = 'SELECT id, name, location, type, is_active FROM stations WHERE is_active = TRUE';
         const [stations] = await connection.execute(query);
 
@@ -118,7 +114,6 @@ app.get('/api/stations/:id', async (req, res) => {
     let connection;
     try {
         connection = await getConnection();
-        // Solo buscamos estaciones activas para la operación (exceptuando información irrelevante como el estado si la parada está inactiva)
         const query = 'SELECT id, name, location, type, is_active FROM stations WHERE id = ? AND is_active = TRUE';
         const [stations] = await connection.execute(query, [stationId]);
 
@@ -126,7 +121,6 @@ app.get('/api/stations/:id', async (req, res) => {
             return res.status(404).json({ error: `Estación con ID ${stationId} no encontrada o inactiva.` });
         }
 
-        // Si la encontramos, mostramos la primera (y única) estación
         res.status(200).json(stations[0]);
 
     } catch (error) {
@@ -145,7 +139,6 @@ app.get('/api/stations/:id', async (req, res) => {
  */
 app.put('/api/stations/:id', async (req, res) => {
     const stationId = req.params.id;
-    // Recibimos todos los campos editables, incluyendo el estado (is_active)
     const { name, location, type, is_active } = req.body; 
 
     // Validación básica
@@ -180,8 +173,7 @@ app.put('/api/stations/:id', async (req, res) => {
 /**
  * [5] ELIMINAR ESTACIÓN (Soft Delete)
  * DELETE /api/stations/:id
- * Desactiva temporalmente la estación (is_active = FALSE), preservando el registro.
- * La acción solo puede ser realizada por administradores.
+ * Desactiva temporalmente la estación (is_active = FALSE).
  */
 app.delete('/api/stations/:id', async (req, res) => {
     const stationId = req.params.id;
@@ -190,12 +182,11 @@ app.delete('/api/stations/:id', async (req, res) => {
     let connection;
     try {
         connection = await getConnection();
-        // Usamos SOFT DELETE: marcamos is_active = FALSE en lugar de borrar la fila.
+        // SOFT DELETE: marcamos is_active = FALSE
         const query = 'UPDATE stations SET is_active = FALSE WHERE id = ? AND is_active = TRUE'; 
         const [result] = await connection.execute(query, [stationId]);
 
         if (result.affectedRows === 0) {
-            // Podría ser 404 (no existe) o 409 (ya está inactiva)
             return res.status(404).json({ error: `Estación con ID ${stationId} no encontrada o ya estaba inactiva.` });
         }
         
@@ -213,8 +204,6 @@ app.delete('/api/stations/:id', async (req, res) => {
 //                       INICIO DEL SERVIDOR
 // ----------------------------------------------------------------------
 
-// **CRUCIAL:** Usa process.env.PORT, que Railway inyecta dinámicamente.
-// El 3000 es solo el valor de reserva para cuando lo ejecutas localmente.
 const PORT = process.env.PORT || 3000; 
 
 app.listen(PORT, () => {
