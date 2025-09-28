@@ -1,0 +1,24 @@
+{
+  "name": "stations-service",
+  "version": "1.0.0",
+  "description": "Servicio de administración de rutas y estaciones",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "mysql2": "^3.15.1"
+  },
+  "engines": {
+    "node": ">=18.x"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.10"
+  }
+}
