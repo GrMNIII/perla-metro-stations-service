@@ -1,70 +1,67 @@
-// Carga variables de entorno (útil para desarrollo local, Railway las inyecta automáticamente)
+/**
+ * Módulo principal del servicio de estaciones.
+ * Expone la API RESTful para la gestión de estaciones de metro.
+ */
 require('dotenv').config();
 
 const express = require('express');
-// Usamos 'mysql2/promise' para trabajar con promesas (código asíncrono más limpio)
-const mysql = require('mysql2/promise');
+const { getPoolConnection } = require('./database'); // Importa la función de conexión desde database.js
 
 const app = express();
 
-// Middleware: Permite que Express lea el cuerpo de las peticiones en formato JSON
+// Middleware para parsear el cuerpo de las peticiones en formato JSON
 app.use(express.json());
 
-// --- Configuración de Conexión a MySQL ---
-// ¡CRUCIAL! Usamos la variable DATABASE_URL inyectada por Railway.
-const connectionUrl = process.env.DATABASE_URL;
+// Tipos de parada válidos (para validación en Node.js, ya que no usamos ENUM en MySQL)
+const VALID_TYPE_IDS = [1, 2, 3]; // 1: Origen, 2: Destino, 3: Intermedia (ejemplo)
 
-/**
- * Función que crea una conexión a la DB.
- * Usa DATABASE_URL para la conexión.
- * @returns {Promise<mysql.Connection>} La conexión a la base de datos.
- */
-async function getConnection() {
-    // Si la conexión URL no existe, lanzamos un error claro
-    if (!connectionUrl) {
-        console.error('❌ Error: La variable DATABASE_URL no está configurada.');
-        throw new Error('No se pudo conectar: Configuración de DB faltante.');
-    }
-    
-    try {
-        // mysql2 puede conectarse usando la cadena de conexión completa (DATABASE_URL)
-        return await mysql.createConnection(connectionUrl);
-    } catch (error) {
-        console.error('❌ Error al obtener conexión a la base de datos:', error.message);
-        throw new Error('No se pudo conectar a la base de datos. Revise las credenciales.');
-    }
-}
-
-// --- RUTA DE SALUD (Health Check) ---
+// RUTA DE SALUD (Health Check)
 app.get('/', (req, res) => {
-    res.status(200).send({ message: '🚀 STATIONS SERVICE: ¡Servicio de estaciones online!', status: 'Running' });
+    res.status(200).send({ 
+        message: 'STATIONS SERVICE: ¡Servicio de estaciones online!', 
+        status: 'Running' 
+    });
 });
 
-// ----------------------------------------------------------------------
-//                       IMPLEMENTACIÓN DE ENDPOINTS
-// ----------------------------------------------------------------------
+// IMPLEMENTACIÓN DE ENDPOINTS CRUD
 
 /**
- * [1] CREAR ESTACIÓN
- * POST /api/stations
- * Registra una nueva estación.
+ * Middleware de Autorización (Simulado)
+ * Función placeholder para controlar el acceso a rutas sensibles (Admin).
+ * En una aplicación real, se verificaría un token JWT o una sesión.
  */
-app.post('/api/stations', async (req, res) => {
-    const { name, location, type } = req.body;
-    
-    // Validación básica de campos requeridos
-    if (!name || !location || !type) {
-        return res.status(400).json({ error: 'Faltan campos requeridos: name, location, type.' });
+const authorizeAdmin = (req, res, next) => {
+    // Simulación: Si no hay un encabezado de autorización, negamos el acceso
+    if (!req.headers.authorization) {
+        return res.status(401).json({ error: 'Acceso denegado. Se requiere autenticación de Administrador.' });
     }
+    next(); 
+};
 
-    // TODO: Añadir validación del 'type' (origen, destino, intermedia)
+
+/**
+ * [1] CREAR ESTACIÓN: Registra una nueva estación.
+ * POST /api/stations
+ */
+app.post('/api/stations', authorizeAdmin, async (req, res) => {
+    const { name, location, type_id } = req.body;
+    
+    // Validación de campos requeridos y de tipo (usando el ID numérico)
+    if (!name || !location || !type_id || !VALID_TYPE_IDS.includes(type_id)) {
+        return res.status(400).json({ error: 'Datos de entrada inválidos. Asegúrese de incluir name, location y un type_id válido (1, 2, o 3).' });
+    }
+    
+    // El estado de la estación es ACTIVA por defecto
     const is_active = true;
     
     let connection;
     try {
-        connection = await getConnection();
-        const query = 'INSERT INTO stations (name, location, type, is_active) VALUES (?, ?, ?, ?)';
-        const [result] = await connection.execute(query, [name, location, type, is_active]);
+        // Usamos un pool para manejar conexiones eficientemente
+        connection = await getPoolConnection(); 
+        
+        // Consulta INSERT: Note que usamos 'type_id'
+        const query = 'INSERT INTO stations (name, location, type_id, is_active) VALUES (?, ?, ?, ?)';
+        const [result] = await connection.execute(query, [name, location, type_id, is_active]);
 
         res.status(201).json({ 
             message: 'Estación creada exitosamente.', 
@@ -73,33 +70,32 @@ app.post('/api/stations', async (req, res) => {
             location
         });
     } catch (error) {
-        console.error('Error al crear estación:', error);
-        res.status(500).json({ error: 'Error interno del servidor al crear la estación.' });
+        console.error('Error al crear estación:', error.message);
+        res.status(500).json({ error: 'Error interno del servidor.' });
     } finally {
-        if (connection) await connection.end();
+        if (connection) connection.release(); // Libera la conexión al pool
     }
 });
 
 
 /**
- * [2] VISUALIZAR TODAS LAS ESTACIONES
+ * [2] VISUALIZAR TODAS LAS ESTACIONES ACTIVAS (ADMIN/OPERACIONES)
  * GET /api/stations
- * Muestra información esencial de todas las estaciones ACTIVAS.
  */
-app.get('/api/stations', async (req, res) => {
-    // Nota: Aquí se debería incluir un middleware de autenticación/autorización (Admin).
+app.get('/api/stations', authorizeAdmin, async (req, res) => {
     let connection;
     try {
-        connection = await getConnection();
-        const query = 'SELECT id, name, location, type, is_active FROM stations WHERE is_active = TRUE';
+        connection = await getPoolConnection();
+        // Se muestran todas las estaciones ACTIVAS
+        const query = 'SELECT id, name, location, type_id, is_active FROM stations WHERE is_active = TRUE';
         const [stations] = await connection.execute(query);
 
         res.status(200).json(stations);
     } catch (error) {
-        console.error('Error al visualizar estaciones:', error);
+        console.error('Error al visualizar estaciones:', error.message);
         res.status(500).json({ error: 'Error interno del servidor al consultar estaciones.' });
     } finally {
-        if (connection) await connection.end();
+        if (connection) connection.release();
     }
 });
 
@@ -107,14 +103,14 @@ app.get('/api/stations', async (req, res) => {
 /**
  * [3] VISUALIZAR ESTACIÓN POR IDENTIFICADOR (ID)
  * GET /api/stations/:id
- * Muestra información detallada de una estación específica.
  */
 app.get('/api/stations/:id', async (req, res) => {
     const stationId = req.params.id;
     let connection;
     try {
-        connection = await getConnection();
-        const query = 'SELECT id, name, location, type, is_active FROM stations WHERE id = ? AND is_active = TRUE';
+        connection = await getPoolConnection();
+        // Se busca por ID. Solo se devuelve si está ACTIVA (is_active = TRUE)
+        const query = 'SELECT id, name, location, type_id, is_active FROM stations WHERE id = ? AND is_active = TRUE';
         const [stations] = await connection.execute(query, [stationId]);
 
         if (stations.length === 0) {
@@ -122,39 +118,37 @@ app.get('/api/stations/:id', async (req, res) => {
         }
 
         res.status(200).json(stations[0]);
-
     } catch (error) {
-        console.error('Error al visualizar estación por ID:', error);
-        res.status(500).json({ error: 'Error interno del servidor al consultar la estación.' });
+        console.error('Error al visualizar estación por ID:', error.message);
+        res.status(500).json({ error: 'Error interno del servidor.' });
     } finally {
-        if (connection) await connection.end();
+        if (connection) connection.release();
     }
 });
 
 
 /**
- * [4] EDITAR ESTACIÓN
+ * [4] EDITAR ESTACIÓN: Actualiza los datos de una estación.
  * PUT /api/stations/:id
- * Actualiza nombre, ubicación, tipo y estado de una estación.
  */
-app.put('/api/stations/:id', async (req, res) => {
+app.put('/api/stations/:id', authorizeAdmin, async (req, res) => {
     const stationId = req.params.id;
-    const { name, location, type, is_active } = req.body; 
+    const { name, location, type_id, is_active } = req.body; 
 
-    // Validación básica
-    if (!name || !location || !type || typeof is_active !== 'boolean') {
-         return res.status(400).json({ error: 'Faltan campos requeridos o el estado (is_active) no es booleano.' });
+    // Validación de campos obligatorios y tipo de dato.
+    if (!name || !location || !type_id || typeof is_active !== 'boolean' || !VALID_TYPE_IDS.includes(type_id)) {
+         return res.status(400).json({ error: 'Datos de entrada inválidos para la actualización.' });
     }
     
     let connection;
     try {
-        connection = await getConnection();
+        connection = await getPoolConnection();
         const query = `
             UPDATE stations 
-            SET name = ?, location = ?, type = ?, is_active = ? 
+            SET name = ?, location = ?, type_id = ?, is_active = ? 
             WHERE id = ?
         `;
-        const [result] = await connection.execute(query, [name, location, type, is_active, stationId]);
+        const [result] = await connection.execute(query, [name, location, type_id, is_active, stationId]);
 
         if (result.affectedRows === 0) {
             return res.status(404).json({ error: `Estación con ID ${stationId} no encontrada.` });
@@ -162,27 +156,25 @@ app.put('/api/stations/:id', async (req, res) => {
 
         res.status(200).json({ message: `Estación ID ${stationId} actualizada exitosamente.` });
     } catch (error) {
-        console.error('Error al editar estación:', error);
-        res.status(500).json({ error: 'Error interno del servidor al actualizar la estación.' });
+        console.error('Error al editar estación:', error.message);
+        res.status(500).json({ error: 'Error interno del servidor.' });
     } finally {
-        if (connection) await connection.end();
+        if (connection) connection.release();
     }
 });
 
 
 /**
- * [5] ELIMINAR ESTACIÓN (Soft Delete)
+ * [5] ELIMINAR ESTACIÓN (SOFT DELETE): Desactiva la estación.
  * DELETE /api/stations/:id
- * Desactiva temporalmente la estación (is_active = FALSE).
  */
-app.delete('/api/stations/:id', async (req, res) => {
+app.delete('/api/stations/:id', authorizeAdmin, async (req, res) => {
     const stationId = req.params.id;
-    // Nota: Aquí se debería incluir un middleware de autorización (Solo Admin).
     
     let connection;
     try {
-        connection = await getConnection();
-        // SOFT DELETE: marcamos is_active = FALSE
+        connection = await getPoolConnection();
+        // SOFT DELETE: Cambia is_active a FALSE. Solo si estaba activa.
         const query = 'UPDATE stations SET is_active = FALSE WHERE id = ? AND is_active = TRUE'; 
         const [result] = await connection.execute(query, [stationId]);
 
@@ -192,21 +184,18 @@ app.delete('/api/stations/:id', async (req, res) => {
         
         res.status(200).json({ message: `Estación ID ${stationId} desactivada (Soft Delete) exitosamente.` });
     } catch (error) {
-        console.error('Error al desactivar estación:', error);
-        res.status(500).json({ error: 'Error interno del servidor al desactivar la estación.' });
+        console.error('Error al desactivar estación:', error.message);
+        res.status(500).json({ error: 'Error interno del servidor.' });
     } finally {
-        if (connection) await connection.end();
+        if (connection) connection.release();
     }
 });
 
 
-// ----------------------------------------------------------------------
-//                       INICIO DEL SERVIDOR
-// ----------------------------------------------------------------------
-
+// INICIO DEL SERVIDOR
 const PORT = process.env.PORT || 3000; 
 
 app.listen(PORT, () => {
-    console.log(`🚀 Servidor Express iniciado en el puerto: ${PORT}`);
-    console.log(`Entorno: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`Servidor Express iniciado en el puerto: ${PORT}`);
+    console.log(`Accede a la API en: http://localhost:${PORT}/`);
 });
